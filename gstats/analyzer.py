@@ -12,11 +12,12 @@ from gstats.author_normalizer import AuthorNormalizer
 class RepositoryAnalyzer:
     """Class for analyzing git repositories."""
 
-    def __init__(self, repo_path: str | Path, author_similarity_threshold: float = 0.7):
+    def __init__(self, repo_path: str | Path, author_similarity_threshold: float = 0.7, manual_author_mappings: dict = None):
         """Initialize the analyzer with a repository path."""
         self.repo_path = Path(repo_path)
         self.repo = None
         self.author_similarity_threshold = author_similarity_threshold
+        self.manual_author_mappings = manual_author_mappings or {}
         self._load_repository()
 
     def _load_repository(self) -> None:
@@ -28,12 +29,12 @@ class RepositoryAnalyzer:
         except Exception as e:
             raise RuntimeError(f"Error loading repository: {str(e)}")
 
-    def get_commit_stats(self) -> pd.DataFrame:
-        """Get commit statistics from the repository."""
+    def get_raw_commit_data(self) -> tuple[pd.DataFrame, set[str]]:
+        """Get raw commit data without author normalization."""
         commits = []
         original_authors = set()
 
-        # First pass: collect all commits and unique author names
+        # Collect all commits and unique author names
         for commit in self.repo.iter_commits():
             try:
                 stats = commit.stats.total
@@ -60,21 +61,35 @@ class RepositoryAnalyzer:
                 print(f"Warning: Skipping commit due to error: {str(e)}")
                 continue
 
-        # Create DataFrame
-        df = pd.DataFrame(commits)
+        return pd.DataFrame(commits), original_authors
 
-        # Normalize author names
-        if not df.empty:
-            # Get author mapping
-            author_mapping = AuthorNormalizer.get_author_mapping(
-                list(original_authors),
-                self.author_similarity_threshold
-            )
+    def get_commit_stats(self) -> pd.DataFrame:
+        """Get commit statistics from the repository with author normalization."""
+        # Get raw data
+        df, original_authors = self.get_raw_commit_data()
+        
+        # Apply author normalization
+        return self.apply_author_normalization(df, original_authors)
 
-            # Apply mapping to DataFrame
-            df['author'] = df['author'].map(author_mapping)
+    def apply_author_normalization(self, df: pd.DataFrame, original_authors: set[str]) -> pd.DataFrame:
+        """Apply author normalization to a DataFrame without re-reading git data."""
+        if df.empty:
+            return df
+        
+        # Create a copy to avoid modifying the original
+        normalized_df = df.copy()
+        
+        # Get author mapping with manual mappings
+        author_mapping = AuthorNormalizer.get_author_mapping(
+            list(original_authors),
+            self.author_similarity_threshold,
+            self.manual_author_mappings
+        )
 
-        return df
+        # Apply mapping to DataFrame
+        normalized_df['author'] = normalized_df['author'].map(author_mapping)
+        
+        return normalized_df
 
     def get_repository_info(self) -> dict:
         """Get basic repository information."""

@@ -29,6 +29,12 @@ if 'df' not in st.session_state:
     st.session_state.df = None
 if 'repo_info' not in st.session_state:
     st.session_state.repo_info = None
+if 'manual_author_mappings' not in st.session_state:
+    st.session_state.manual_author_mappings = {}
+if 'raw_commit_data' not in st.session_state:
+    st.session_state.raw_commit_data = None
+if 'original_authors' not in st.session_state:
+    st.session_state.original_authors = None
 
 
 def analyze_repository():
@@ -36,9 +42,19 @@ def analyze_repository():
     try:
         st.session_state.analyzer = RepositoryAnalyzer(
             st.session_state.repo_path,
-            st.session_state.similarity_threshold
+            st.session_state.similarity_threshold,
+            st.session_state.manual_author_mappings
         )
-        df = st.session_state.analyzer.get_commit_stats()
+        
+        # Only extract raw data if we don't have it cached
+        if st.session_state.raw_commit_data is None:
+            st.session_state.raw_commit_data, st.session_state.original_authors = st.session_state.analyzer.get_raw_commit_data()
+        
+        # Apply author normalization to cached data
+        df = st.session_state.analyzer.apply_author_normalization(
+            st.session_state.raw_commit_data, 
+            st.session_state.original_authors
+        )
 
         # Filter out large commits
         if st.session_state.max_lines_per_commit > 0:
@@ -51,6 +67,26 @@ def analyze_repository():
         st.error(f"Error analyzing repository: {str(e)}")
         import traceback
         traceback.print_exc()
+
+
+def reapply_author_mappings():
+    """Fast re-application of author mappings without re-reading git data."""
+    if st.session_state.analyzer and st.session_state.raw_commit_data is not None:
+        # Update analyzer settings
+        st.session_state.analyzer.manual_author_mappings = st.session_state.manual_author_mappings
+        st.session_state.analyzer.author_similarity_threshold = st.session_state.similarity_threshold
+        
+        # Apply author normalization to cached data
+        df = st.session_state.analyzer.apply_author_normalization(
+            st.session_state.raw_commit_data, 
+            st.session_state.original_authors
+        )
+
+        # Filter out large commits
+        if st.session_state.max_lines_per_commit > 0:
+            df = df[df['insertions'] + df['deletions'] <= st.session_state.max_lines_per_commit]
+
+        st.session_state.df = df
 
 
 def main():
@@ -71,6 +107,9 @@ def main():
 
             if submitted:
                 st.session_state.repo_path = repo_path
+                # Clear cached data when changing repository
+                st.session_state.raw_commit_data = None
+                st.session_state.original_authors = None
                 analyze_repository()
 
     if st.session_state.df is not None and st.session_state.repo_info is not None:
@@ -174,60 +213,218 @@ def main():
             st.plotly_chart(branch_fig, use_container_width=True)
 
         with tab5:
-            # Settings and author mappings
-            st.subheader("Settings")
+            st.header("⚙️ Settings & Author Management")
+            
+            # Use cached original authors
+            original_authors = st.session_state.original_authors
+            
+            # Settings in a clean layout
+            st.subheader("📊 Analysis Settings")
+            
+            settings_col1, settings_col2 = st.columns(2)
+            
+            with settings_col1:
+                new_threshold = st.slider(
+                    "🎯 Author similarity threshold",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.similarity_threshold,
+                    step=0.05,
+                    help="Higher values require more exact matches between author names"
+                )
+                
+            with settings_col2:
+                new_max_lines = st.number_input(
+                    "📏 Max lines per commit",
+                    min_value=0,
+                    max_value=1000000,
+                    value=st.session_state.max_lines_per_commit,
+                    step=10000,
+                    help="Commits with more lines than this will be ignored. Set to 0 to disable."
+                )
 
-            # Author similarity threshold slider
-            new_threshold = st.slider(
-                "Author name similarity threshold",
-                min_value=0.0,
-                max_value=1.0,
-                value=st.session_state.similarity_threshold,
-                step=0.1,
-                help="Higher values require more exact matches between author names"
-            )
-
-            # Max lines per commit setting
-            new_max_lines = st.number_input(
-                "Maximum lines per commit",
-                min_value=0,
-                max_value=1000000,
-                value=st.session_state.max_lines_per_commit,
-                step=10000,
-                help="Commits with more lines than this will be ignored. Set to 0 to disable."
-            )
-
-            # If any setting changed, update and re-analyze
+            # Apply settings changes
             if (new_threshold != st.session_state.similarity_threshold or
                     new_max_lines != st.session_state.max_lines_per_commit):
                 st.session_state.similarity_threshold = new_threshold
                 st.session_state.max_lines_per_commit = new_max_lines
-                analyze_repository()
+                reapply_author_mappings()
                 st.rerun()
 
-            # Get the original author names from the repository
-            original_authors = set()
-            for commit in st.session_state.analyzer.repo.iter_commits():
-                original_authors.add(commit.author.name)
+            st.divider()
 
-            # Display author mappings in an expandable section
-            with st.expander("Show Author Mappings", expanded=True):
-                st.write("The following author names have been merged:")
-                groups = AuthorNormalizer.find_similar_names(
+            # Author Management Section
+            st.subheader("👥 Author Management")
+            
+            # Get current groupings and mappings
+            groups = AuthorNormalizer.get_combined_groups(
+                list(original_authors),
+                st.session_state.similarity_threshold,
+                st.session_state.manual_author_mappings
+            )
+            
+            # Find standalone authors (those not in any group)
+            standalone_authors = []
+            for author in original_authors:
+                is_in_group = any(author in members for members in groups.values())
+                if not is_in_group:
+                    standalone_authors.append(author)
+            
+            # Show stats
+            total_authors = len(original_authors)
+            unique_after_merge = st.session_state.df['author'].nunique() if st.session_state.df is not None else total_authors
+            
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            with col_stat1:
+                st.metric("Original Authors", total_authors)
+            with col_stat2:
+                st.metric("After Merging", unique_after_merge)
+            with col_stat3:
+                st.metric("Groups", len(groups))
+            
+            # Create tabs for different author management views
+            author_tab1, author_tab2, author_tab3 = st.tabs([
+                "🔗 Merge Authors", "📋 Current Groups", "🗂️ All Authors"
+            ])
+            
+            with author_tab1:
+                st.markdown("**Merge two authors into one**")
+                
+                # Get smart merge options
+                authors_to_merge, merge_targets = AuthorNormalizer.get_merge_options(
                     list(original_authors),
-                    st.session_state.similarity_threshold
+                    st.session_state.similarity_threshold,
+                    st.session_state.manual_author_mappings
                 )
-
-                if not any(len(names) > 1 for names in groups.values()):
-                    st.info("No author names were merged with the current similarity threshold.")
+                
+                if not authors_to_merge:
+                    st.info("ℹ️ All authors are already part of groups or merged. No additional merging is possible.")
                 else:
-                    for canonical_name, similar_names in groups.items():
-                        if len(similar_names) > 1:
-                            st.markdown(f"**{canonical_name}**")
-                            for name in similar_names:
-                                if name != canonical_name:
-                                    st.markdown(f"- {name}")
-                            st.markdown("---")
+                    merge_col1, merge_col2, merge_col3 = st.columns([2, 2, 1])
+                    
+                    with merge_col1:
+                        author_to_merge = st.selectbox(
+                            "Author to merge",
+                            options=[""] + authors_to_merge,
+                            key="merge_from",
+                            help="Select an unmerged author to merge into a group or another author"
+                        )
+                        
+                    with merge_col2:
+                        # Filter out the selected author from merge targets to prevent self-merge
+                        available_targets = [t for t in merge_targets if t != author_to_merge]
+                        merge_target = st.selectbox(
+                            "Merge into",
+                            options=[""] + available_targets,
+                            key="merge_into",
+                            help="Select an existing author or group leader to merge into"
+                        )
+                        
+                    with merge_col3:
+                        st.write("")  # Spacing
+                        st.write("")  # Spacing
+                        if st.button("🔗 Merge", disabled=not (author_to_merge and merge_target), use_container_width=True):
+                            st.session_state.manual_author_mappings[author_to_merge] = merge_target
+                            reapply_author_mappings()
+                            st.rerun()
+                    
+                    # Show preview
+                    if author_to_merge and merge_target:
+                        # Check if target is already a group leader
+                        current_groups = AuthorNormalizer.get_combined_groups(
+                            list(original_authors),
+                            st.session_state.similarity_threshold,
+                            st.session_state.manual_author_mappings
+                        )
+                        
+                        target_group_size = 0
+                        for canonical, members in current_groups.items():
+                            if canonical == merge_target:
+                                target_group_size = len(members)
+                                break
+                        
+                        if target_group_size > 1:
+                            st.info(f"Preview: **{author_to_merge}** will be added to the **{merge_target}** group ({target_group_size} members)")
+                        else:
+                            st.info(f"Preview: **{author_to_merge}** will be merged into **{merge_target}**")
+                    
+                    # Show available merge statistics
+                    st.caption(f"📊 {len(authors_to_merge)} authors available to merge • {len(merge_targets)} possible targets")
+            
+            with author_tab2:
+                st.markdown("**Current author groups** (showing merged authors)")
+                
+                if groups:
+                    for i, (canonical_name, similar_names) in enumerate(groups.items()):
+                        with st.container():
+                            col_group, col_actions = st.columns([4, 1])
+                            
+                            with col_group:
+                                st.markdown(f"**🎯 {canonical_name}**")
+                                for name in similar_names:
+                                    if name != canonical_name:
+                                        is_manual = name in st.session_state.manual_author_mappings
+                                        indicator = " (manual)" if is_manual else " (auto)"
+                                        st.markdown(f"- {name}{indicator}")
+                            
+                            with col_actions:
+                                # Option to unmerge manual mappings
+                                manual_mappings_in_group = [
+                                    name for name in similar_names 
+                                    if name in st.session_state.manual_author_mappings
+                                ]
+                                if manual_mappings_in_group:
+                                    if st.button("🔓 Unmerge", key=f"unmerge_group_{i}"):
+                                        for name in manual_mappings_in_group:
+                                            if name in st.session_state.manual_author_mappings:
+                                                del st.session_state.manual_author_mappings[name]
+                                        reapply_author_mappings()
+                                        st.rerun()
+                            
+                        st.divider()
+                else:
+                    st.info("No author groups found. Authors are either unique or similarity threshold is too high.")
+            
+            with author_tab3:
+                st.markdown("**All authors in repository**")
+                
+                # Show stats
+                total_authors = len(original_authors)
+                unique_after_merge = st.session_state.df['author'].nunique() if st.session_state.df is not None else total_authors
+                
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                with col_stat1:
+                    st.metric("Original Authors", total_authors)
+                with col_stat2:
+                    st.metric("After Merging", unique_after_merge)
+                with col_stat3:
+                    merged_count = total_authors - unique_after_merge
+                    st.metric("Authors Merged", merged_count)
+                
+                # List all authors with their status
+                st.markdown("**Author list:**")
+                for author in sorted(original_authors):
+                    status_icon = "🔗" if author in st.session_state.manual_author_mappings else "👤"
+                    if author in st.session_state.manual_author_mappings:
+                        target = st.session_state.manual_author_mappings[author]
+                        st.markdown(f"{status_icon} {author} → {target}")
+                    else:
+                        st.markdown(f"{status_icon} {author}")
+
+            # Manual mappings management section
+            if st.session_state.manual_author_mappings:
+                st.divider()
+                st.subheader("🗑️ Manual Mappings")
+                
+                for orig, target in list(st.session_state.manual_author_mappings.items()):
+                    map_col, del_col = st.columns([5, 1])
+                    with map_col:
+                        st.markdown(f"🔗 **{orig}** → **{target}**")
+                    with del_col:
+                        if st.button("🗑️", key=f"delete_mapping_{orig}"):
+                            del st.session_state.manual_author_mappings[orig]
+                            reapply_author_mappings()
+                            st.rerun()
 
 
 if __name__ == "__main__":
