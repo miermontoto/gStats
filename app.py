@@ -35,6 +35,8 @@ if 'raw_commit_data' not in st.session_state:
     st.session_state.raw_commit_data = None
 if 'original_authors' not in st.session_state:
     st.session_state.original_authors = None
+if 'email_to_names' not in st.session_state:
+    st.session_state.email_to_names = None
 
 
 def analyze_repository():
@@ -48,12 +50,17 @@ def analyze_repository():
         
         # Only extract raw data if we don't have it cached
         if st.session_state.raw_commit_data is None:
-            st.session_state.raw_commit_data, st.session_state.original_authors = st.session_state.analyzer.get_raw_commit_data()
-        
-        # Apply author normalization to cached data
+            (
+                st.session_state.raw_commit_data,
+                st.session_state.original_authors,
+                st.session_state.email_to_names
+            ) = st.session_state.analyzer.get_raw_commit_data()
+
+        # Apply author normalization to cached data (now email-based)
         df = st.session_state.analyzer.apply_author_normalization(
-            st.session_state.raw_commit_data, 
-            st.session_state.original_authors
+            st.session_state.raw_commit_data,
+            st.session_state.original_authors,
+            st.session_state.email_to_names
         )
 
         # Filter out large commits
@@ -75,11 +82,12 @@ def reapply_author_mappings():
         # Update analyzer settings
         st.session_state.analyzer.manual_author_mappings = st.session_state.manual_author_mappings
         st.session_state.analyzer.author_similarity_threshold = st.session_state.similarity_threshold
-        
-        # Apply author normalization to cached data
+
+        # Apply author normalization to cached data (email-based)
         df = st.session_state.analyzer.apply_author_normalization(
-            st.session_state.raw_commit_data, 
-            st.session_state.original_authors
+            st.session_state.raw_commit_data,
+            st.session_state.original_authors,
+            st.session_state.email_to_names
         )
 
         # Filter out large commits
@@ -110,6 +118,7 @@ def main():
                 # Clear cached data when changing repository
                 st.session_state.raw_commit_data = None
                 st.session_state.original_authors = None
+                st.session_state.email_to_names = None
                 analyze_repository()
 
     if st.session_state.df is not None and st.session_state.repo_info is not None:

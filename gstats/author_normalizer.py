@@ -1,8 +1,11 @@
 """Author name normalization module."""
 
 import re
+from collections import Counter
 from difflib import SequenceMatcher
 from typing import Dict, List, Tuple
+
+import pandas as pd
 
 
 class AuthorNormalizer:
@@ -101,23 +104,137 @@ class AuthorNormalizer:
         """Get available merge options: (authors_that_can_be_merged, merge_targets)."""
         if manual_mappings is None:
             manual_mappings = {}
-        
+
         # Get the final mapping to understand current state
         final_mapping = AuthorNormalizer.get_author_mapping(names, threshold, manual_mappings)
-        
+
         # Find canonical authors (those who are the target of mappings)
         canonical_authors = set()
         mapped_authors = set()
-        
+
         for original, canonical in final_mapping.items():
             canonical_authors.add(canonical)
             if original != canonical:
                 mapped_authors.add(original)
-        
+
         # Authors that can be merged: those not already merged into someone else
         authors_to_merge = [name for name in names if name not in mapped_authors]
-        
+
         # Merge targets: canonical authors (group leaders) and standalone authors
         merge_targets = sorted(list(canonical_authors))
-        
+
         return sorted(authors_to_merge), merge_targets
+
+    @staticmethod
+    def get_author_mapping_by_email(
+        df: pd.DataFrame,
+        email_to_names: Dict[str, set],
+        name_similarity_threshold: float = 0.8,
+        manual_mappings: Dict[str, str] = None
+    ) -> Dict[str, str]:
+        """Create author mapping using email as primary grouping key.
+
+        Strategy:
+        1. Group by email first - names sharing an email are the same person
+        2. For each email group, pick the most frequently used name as canonical
+        3. Apply name similarity for names with different emails (fallback)
+        4. Apply manual mappings last (override everything)
+
+        Args:
+            df: DataFrame with 'author' and 'author_email' columns
+            email_to_names: Mapping from email to set of names used with that email
+            name_similarity_threshold: Threshold for name similarity matching
+            manual_mappings: Manual author mappings (override)
+
+        Returns:
+            Dict mapping each author name to its canonical form
+        """
+        if manual_mappings is None:
+            manual_mappings = {}
+
+        mapping: Dict[str, str] = {}
+
+        # Step 1: Group by email - pick most common name for each email
+        if 'author_email' in df.columns:
+            # Count name occurrences per email
+            email_name_counts = df.groupby(['author_email', 'author']).size().reset_index(name='count')
+
+            for email, names in email_to_names.items():
+                if not email or len(names) <= 1:
+                    # no email or single name, no grouping needed
+                    continue
+
+                # Find most common name for this email
+                email_counts = email_name_counts[email_name_counts['author_email'] == email]
+                if not email_counts.empty:
+                    canonical_name = email_counts.loc[email_counts['count'].idxmax(), 'author']
+                    for name in names:
+                        mapping[name] = canonical_name
+
+        # Step 2: Apply name similarity for unmapped names (different emails but similar names)
+        all_names = list(df['author'].unique())
+        unmapped_names = [n for n in all_names if n not in mapping]
+
+        if unmapped_names and name_similarity_threshold < 1.0:
+            # Get similarity-based mapping for unmapped names
+            similarity_mapping = AuthorNormalizer.get_author_mapping(
+                unmapped_names,
+                name_similarity_threshold,
+                {}  # no manual mappings here, applied later
+            )
+            for name, canonical in similarity_mapping.items():
+                if name not in mapping:
+                    mapping[name] = canonical
+
+        # Ensure all names have a mapping (to themselves if nothing else)
+        for name in all_names:
+            if name not in mapping:
+                mapping[name] = name
+
+        # Step 3: Apply manual mappings (highest priority)
+        for original, target in manual_mappings.items():
+            if original in all_names and target in all_names:
+                # Resolve any chains in manual mappings
+                final_target = target
+                visited = set()
+                while final_target in manual_mappings and final_target not in visited:
+                    visited.add(final_target)
+                    final_target = manual_mappings[final_target]
+
+                mapping[original] = final_target
+
+                # Update any names that were mapping to 'original' to now map to 'final_target'
+                for name, canonical in list(mapping.items()):
+                    if canonical == original:
+                        mapping[name] = final_target
+
+        return mapping
+
+    @staticmethod
+    def get_email_based_groups(
+        email_to_names: Dict[str, set],
+        df: pd.DataFrame = None
+    ) -> Dict[str, List[str]]:
+        """Get author groups based on email, showing which names share an email.
+
+        Returns groups where multiple names share the same email address.
+        """
+        groups: Dict[str, List[str]] = {}
+
+        for email, names in email_to_names.items():
+            if not email or len(names) <= 1:
+                continue
+
+            # Pick canonical name (most used if df provided, otherwise first alphabetically)
+            names_list = sorted(list(names))
+            canonical = names_list[0]
+
+            if df is not None and 'author' in df.columns:
+                # Find most common name
+                name_counts = df[df['author'].isin(names)]['author'].value_counts()
+                if not name_counts.empty:
+                    canonical = name_counts.idxmax()
+
+            groups[canonical] = names_list
+
+        return groups

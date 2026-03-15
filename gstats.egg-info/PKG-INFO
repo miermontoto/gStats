@@ -1,0 +1,58 @@
+Metadata-Version: 2.4
+Name: gstats
+Version: 0.1.0
+Summary: display git stats in a streamlit app
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: gitpython>=3.1.44
+Requires-Dist: pandas>=2.2.3
+Requires-Dist: plotly>=6.0.1
+Requires-Dist: python-dateutil>=2.9.0.post0
+Requires-Dist: streamlit>=1.44.1
+Requires-Dist: tzdata>=2025.2
+
+# Git Stats Visualizer
+
+A simple tool to visualize git repository statistics using Streamlit.
+
+## Features
+
+- Basic repository statistics (total commits, unique authors, first commit date)
+- Commit timeline visualization
+- Author contribution analysis
+- Interactive plots using Plotly
+
+## Installation
+
+1. Clone this repository
+2. Install UV (if not already installed):
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+3. Install the required dependencies:
+   ```bash
+   uv pip install -e .
+   ```
+
+## Usage
+
+1. Run the application:
+   ```bash
+   streamlit run app.py
+   ```
+2. Enter the path to your git repository in the sidebar
+3. Click "Analyze Repository" to view the statistics
+
+## Requirements
+
+- Python 3.8+
+- UV package manager
+- GitPython
+- Streamlit
+- Pandas
+- Plotly
+- Python-dateutil
+
+## License
+
+MIT
