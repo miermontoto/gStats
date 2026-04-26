@@ -5,7 +5,7 @@ description = "display git stats in a streamlit app"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "gitpython>=3.1.44",
+    "gitpython>=3.1.47",
     "pandas>=2.2.3",
     "plotly>=6.0.1",
     "python-dateutil>=2.9.0.post0",
